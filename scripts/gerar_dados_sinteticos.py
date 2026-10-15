@@ -350,7 +350,7 @@ def gerar(seed: int, data_corte: date, n_clientes: int) -> dict[str, list[dict]]
                         "valor_entrada": dinheiro(entrada),
                         "qtd_parcelas": qtd_acordo,
                         "status_crm": status_crm,  # status como está no CRM, nem sempre atualizado
-                        "atualizado_em": (dia + timedelta(days=rng.randint(0, 30))).isoformat() + "T18:00:00",
+                        "atualizado_em": min(dia + timedelta(days=rng.randint(0, 30)), data_corte).isoformat() + "T18:00:00",
                     })
                     for p in vencidas:
                         p.em_acordo = True

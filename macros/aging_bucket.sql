@@ -4,7 +4,7 @@
 -#}
 {% macro aging_bucket(dias_atraso) -%}
     case
-        when {{ dias_atraso }} is null then 'sem_vencimento'
+        when {{ dias_atraso }} is null then 'sem_atraso'
         when {{ dias_atraso }} <= 0   then 'a_vencer'
         when {{ dias_atraso }} <= 30  then '01-30'
         when {{ dias_atraso }} <= 60  then '31-60'

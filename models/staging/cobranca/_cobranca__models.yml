@@ -1,0 +1,199 @@
+version: 2
+
+models:
+  - name: stg_cobranca__clientes
+    description: >
+      Camada Raw/Bronze. Cadastro de devedores padronizado (CPF só dígitos, e-mail minúsculo, UF maiúscula).
+      Contém dado pessoal em claro: dataset com acesso restrito ao time de dados.
+    columns:
+      - name: cliente_id
+        description: Chave primária.
+        data_tests:
+          - unique
+          - not_null
+      - name: cpf
+        description: CPF com 11 dígitos, sem máscara.
+        data_tests:
+          - not_null
+          - dbt_utils.not_empty_string
+      - name: uf
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "= upper(uf) and length(uf) = 2"
+
+  - name: stg_cobranca__contratos
+    description: Camada Raw/Bronze. Contratos cedidos pelos credores (carteiras).
+    columns:
+      - name: contrato_id
+        data_tests:
+          - unique
+          - not_null
+      - name: cliente_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_cobranca__clientes')
+                field: cliente_id
+      - name: carteira
+        data_tests:
+          - not_null
+      - name: valor_contratado
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+      - name: status_crm
+        description: Status informado pelo CRM do credor (pode estar desatualizado).
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['ativo', 'inadimplente', 'em_acordo', 'quitado', 'ajuizado']
+
+  - name: stg_cobranca__parcelas
+    description: Camada Raw/Bronze. Parcelas originais de cada contrato.
+    columns:
+      - name: parcela_id
+        data_tests:
+          - unique
+          - not_null
+      - name: contrato_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_cobranca__contratos')
+                field: contrato_id
+      - name: data_vencimento
+        data_tests:
+          - not_null
+      - name: valor_parcela
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+      - name: status_origem
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['aberta', 'vencida', 'paga', 'paga_parcial', 'renegociada']
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [contrato_id, numero_parcela]
+
+  - name: stg_cobranca__acordos
+    description: Camada Raw/Bronze. Acordos de renegociação com canal de origem e plano de pagamento.
+    columns:
+      - name: acordo_id
+        data_tests:
+          - unique
+          - not_null
+      - name: contrato_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_cobranca__contratos')
+                field: contrato_id
+      - name: canal_origem
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['discador', 'bot_whatsapp', 'sms', 'email', 'ura', 'portal']
+      - name: desconto_pct
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: valor_acordo
+        description: Deve ser menor ou igual à dívida (desconto nunca negativo).
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "<= valor_divida"
+
+  - name: stg_cobranca__pagamentos
+    description: Camada Raw/Bronze. Pagamentos de parcelas originais e de parcelas de acordo.
+    columns:
+      - name: pagamento_id
+        data_tests:
+          - unique
+          - not_null
+      - name: contrato_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_cobranca__contratos')
+                field: contrato_id
+      - name: parcela_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_cobranca__parcelas')
+                field: parcela_id
+      - name: acordo_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_cobranca__acordos')
+                field: acordo_id
+      - name: valor_pago
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: false
+      - name: meio_pagamento
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['boleto', 'pix', 'debito_conta', 'cartao']
+      - name: tipo_pagamento
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['parcela', 'acordo']
+    data_tests:
+      # Um pagamento aponta para uma parcela OU para um acordo, nunca para os dois nem para nenhum.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(parcela_id is null) != (acordo_id is null)"
+
+  - name: stg_cobranca__contatos
+    description: Camada Raw/Bronze. Tentativas de contato de todos os fornecedores em um único esquema.
+    columns:
+      - name: contato_id
+        data_tests:
+          - unique
+          - not_null
+      - name: contrato_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_cobranca__contratos')
+                field: contrato_id
+      - name: data_hora_contato
+        data_tests:
+          - not_null
+      - name: canal
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['discador', 'bot_whatsapp', 'sms', 'email', 'ura']
+      - name: resultado
+        data_tests:
+          - not_null
+      - name: fornecedor
+        data_tests:
+          - not_null

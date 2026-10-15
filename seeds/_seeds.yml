@@ -1,0 +1,52 @@
+version: 2
+
+seeds:
+  - name: raw_clientes
+    description: >
+      Landing de clientes (sintético, gerado por scripts/gerar_dados_sinteticos.py). Em produção seria a
+      tabela carregada do GCS a partir do extrato do CRM. Contém dado pessoal fictício.
+  - name: raw_contratos
+    description: Landing de contratos cedidos pelos credores.
+  - name: raw_parcelas
+    description: Landing de parcelas originais.
+  - name: raw_acordos
+    description: Landing de acordos da plataforma de negociação.
+  - name: raw_pagamentos
+    description: Landing de pagamentos (arquivo de baixa do credor e retorno da plataforma de acordos).
+  - name: raw_contatos
+    description: Landing de tentativas de contato (webhooks do discador e do bot, relatórios de SMS e e-mail).
+
+  - name: regua_cobranca
+    description: >
+      Régua de cobrança vigente: faixa de dias de atraso -> fase, canal prioritário, ação e desconto máximo.
+      Tabela de referência mantida pelo time de dados junto com a operação.
+    columns:
+      - name: fase
+        data_tests:
+          - unique
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['preventiva', 'amigavel', 'administrativa', 'recuperacao', 'juridica']
+      - name: dias_atraso_inicio
+        data_tests:
+          - not_null
+      - name: dias_atraso_fim
+        data_tests:
+          - not_null
+
+  - name: resultado_contato
+    description: >
+      Catálogo de resultados por canal, com as flags que definem contato efetivo (CPC), promessa,
+      acordo e opt-out. É aqui que a operação decide o que conta como "efetivo" em cada canal.
+    columns:
+      - name: resultado
+        data_tests:
+          - not_null
+      - name: is_contato_efetivo
+        data_tests:
+          - not_null
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [canal, resultado]
