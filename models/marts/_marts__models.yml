@@ -1,0 +1,278 @@
+version: 2
+
+models:
+  - name: fct_parcelas
+    description: >
+      Camada Curated/Gold. Fato no grão de parcela com saldo, atraso, aging, status consolidado e fase
+      da régua. Fonte única de verdade para saldo vencido e recuperação. Fora do sandbox, particionada
+      por mês de vencimento e clusterizada por carteira e status.
+    columns:
+      - name: parcela_id
+        description: Chave primária.
+        data_tests:
+          - unique
+          - not_null
+      - name: contrato_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_contratos')
+                field: contrato_id
+      - name: cliente_id
+        description: Toda parcela pertence a um cliente presente em dim_clientes.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_clientes')
+                field: cliente_id
+      - name: data_vencimento
+        description: Chave de partição (mês). Nunca anterior à contratação.
+        data_tests:
+          - not_null
+          - date_not_before:
+              arguments:
+                compared_to: data_contratacao
+      - name: data_pagamento
+        description: Pagamento nunca anterior à contratação.
+        data_tests:
+          - date_not_before:
+              arguments:
+                compared_to: data_contratacao
+      - name: status_consolidado
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['paga', 'paga_parcial', 'renegociada', 'vencida', 'a_vencer']
+      - name: aging_bucket
+        data_tests:
+          - not_null
+      - name: saldo_aberto
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: valor_pago
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: dias_atraso
+        description: Em dias; parcela paga em dia tem valor <= 0.
+        data_tests:
+          - not_null
+
+  - name: fct_contatos
+    description: >
+      Camada Curated/Gold. Fato de tentativas de contato com flags de efetividade, posição na régua
+      e conversão em acordo em 7 dias. Fora do sandbox, incremental por partição diária.
+    columns:
+      - name: contato_id
+        data_tests:
+          - unique
+          - not_null
+      - name: contrato_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_contratos')
+                field: contrato_id
+      - name: data_contato
+        description: Chave de partição (dia).
+        data_tests:
+          - not_null
+      - name: canal
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['discador', 'bot_whatsapp', 'sms', 'email', 'ura']
+      - name: fornecedor
+        data_tests:
+          - not_null
+      - name: hora_contato
+        description: Contato fora da janela permitida (8h às 20h) é violação de conduta.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 8
+                max_value: 20
+              config:
+                severity: warn
+      - name: custo_unitario
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+  - name: dim_clientes
+    description: >
+      Camada Curated/Gold. Dimensão de devedores com dado pessoal mascarado (CPF e e-mail em hash com sal,
+      nome em iniciais, telefone só DDD, idade em faixa) e indicadores de carteira, régua e opt-out.
+    columns:
+      - name: cliente_id
+        data_tests:
+          - unique
+          - not_null
+      - name: cpf_hash
+        description: SHA-256 do CPF com sal; 64 caracteres hexadecimais, nunca o CPF em claro.
+        data_tests:
+          - not_null
+          - unique
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "not regexp_contains(cpf_hash, r'^[0-9]{11}$') and length(cpf_hash) = 64"
+      - name: email_hash
+        description: SHA-256 do e-mail com sal; nulo quando o cliente não tem e-mail.
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "not regexp_contains(email_hash, '@')"
+      - name: uf
+        data_tests:
+          - not_null
+      - name: faixa_etaria
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['ate_24', '25_34', '35_44', '45_59', '60_mais', 'nao_informada']
+      - name: segmento_cobranca
+        description: sem_contrato, adimplente, em_negociacao, inadimplente, reincidente (acordo quebrado).
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['sem_contrato', 'adimplente', 'em_negociacao', 'inadimplente', 'reincidente']
+      - name: fase_regua_pior
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['sem_atraso', 'preventiva', 'amigavel', 'administrativa', 'recuperacao', 'juridica']
+      - name: possui_opt_out
+        data_tests:
+          - not_null
+      - name: saldo_vencido_total
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+  - name: dim_contratos
+    description: >
+      Camada Curated/Gold. Dimensão de contratos com status consolidado, posição na régua, acordo vigente
+      e indicadores de contato. Alimenta a fila de trabalho da operação e as features de propensão.
+    columns:
+      - name: contrato_id
+        data_tests:
+          - unique
+          - not_null
+      - name: cliente_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_clientes')
+                field: cliente_id
+      - name: status_consolidado
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['quitado', 'em_acordo', 'inadimplente', 'em_dia']
+      - name: fase_regua
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['preventiva', 'amigavel', 'administrativa', 'recuperacao', 'juridica']
+      - name: taxa_contato_efetivo
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+
+  - name: mart_recuperacao_diaria
+    description: >
+      Camada Curated/Gold. Fechamento diário da recuperação por carteira: saldo vencido no início do dia
+      por faixa de aging, valor recuperado (parcelas em atraso + acordos), acordos fechados e taxa de
+      recuperação. Fora do sandbox, particionada por dia e clusterizada por carteira.
+    columns:
+      - name: recuperacao_diaria_key
+        data_tests:
+          - unique
+          - not_null
+      - name: data_referencia
+        data_tests:
+          - not_null
+      - name: carteira
+        data_tests:
+          - not_null
+      - name: saldo_vencido_inicio_dia
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: valor_recuperado
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: taxa_recuperacao_dia
+        description: >
+          Pode passar de 1 em dias de pagamento concentrado numa carteira pequena (ex.: quitação de
+          acordo maior que o saldo vencido do dia). Acima de 5 é sinal de erro e falha o teste.
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 5
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [data_referencia, carteira]
+      # soma das faixas de aging bate com o saldo vencido total do dia
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: >
+              abs(saldo_vencido_01_30 + saldo_vencido_31_60 + saldo_vencido_61_90 + saldo_vencido_91_180
+                  + saldo_vencido_181_360 + saldo_vencido_360_mais - saldo_vencido_inicio_dia) < 1
+          config:
+            severity: warn
+
+  - name: mart_efetividade_canal_diaria
+    description: >
+      Camada Curated/Gold. Efetividade de contato por dia, carteira, canal e fornecedor: tentativas,
+      contatos efetivos, promessas, acordos, conversão em 7 dias, opt-out e custo por resultado.
+    columns:
+      - name: efetividade_key
+        data_tests:
+          - unique
+          - not_null
+      - name: tentativas
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: taxa_contato_efetivo
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: contatos_efetivos
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "<= tentativas"
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [data_contato, carteira, canal, fornecedor]
