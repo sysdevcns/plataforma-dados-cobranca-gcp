@@ -33,6 +33,7 @@ pagamentos as (
 
     select
         pagamentos.contrato_id,
+        pagamentos.parcela_id,
         pagamentos.data_pagamento,
         pagamentos.valor_pago,
         pagamentos.tipo_pagamento,
@@ -60,20 +61,21 @@ acordos as (
 
 limites as (
 
+    -- do primeiro vencimento (ou primeiro pagamento, se antecipado) até a data de referência
     select
-        min(data_vencimento)       as data_inicio,
-        max(data_referencia)       as data_fim
+        least(min(parcelas.data_vencimento), min(pagamentos.data_pagamento))  as data_inicio,
+        max(parcelas.data_referencia)                                         as data_fim
     from parcelas
+    cross join pagamentos
 
 ),
 
 dias as (
 
-    {{ dbt_utils.date_spine(
-        datepart="day",
-        start_date="(select data_inicio from limites)",
-        end_date="(select date_add(data_fim, interval 1 day) from limites)"
-    ) }}
+    -- um dia por linha, do primeiro vencimento até a data de referência (nativo do BigQuery)
+    select data_referencia
+    from limites
+    cross join unnest(generate_date_array(limites.data_inicio, limites.data_fim)) as data_referencia
 
 ),
 
@@ -86,41 +88,64 @@ carteiras as (
 spine as (
 
     select
-        cast(dias.date_day as date) as data_referencia,
+        dias.data_referencia,
         carteiras.carteira
     from dias
     cross join carteiras
 
 ),
 
--- Saldo vencido no início de cada dia: parcela vencida antes de D, ainda não paga em D e ainda não
+-- Saldo vencido no início de cada dia D: parcela vencida antes de D que em D ainda não tinha
+-- sido paga (valor integral) ou que foi paga só parcialmente (saldo restante), e que não estava
 -- coberta por acordo vigente em D.
+parcelas_por_dia as (
+
+    select
+        spine.data_referencia,
+        spine.carteira,
+        parcelas.parcela_id,
+        parcelas.contrato_id,
+        date_diff(spine.data_referencia, parcelas.data_vencimento, day)     as dias_atraso_em_d,
+        case
+            when parcelas.data_pagamento is null or parcelas.data_pagamento >= spine.data_referencia
+                then parcelas.valor_parcela
+            else parcelas.saldo_aberto
+        end                                                                 as saldo_em_d
+    from spine
+    inner join parcelas
+        on spine.carteira = parcelas.carteira
+        and parcelas.data_vencimento < spine.data_referencia
+        and (parcelas.data_pagamento is null
+             or parcelas.data_pagamento >= spine.data_referencia
+             or parcelas.saldo_aberto > 0)
+        and not (parcelas.is_renegociada and parcelas.data_acordo < spine.data_referencia)
+
+),
+
 aging_diario as (
 
     select
         spine.data_referencia,
         spine.carteira,
-        count(parcelas.parcela_id)                                              as parcelas_vencidas,
-        count(distinct parcelas.contrato_id)                                    as contratos_vencidos,
-        sum(parcelas.valor_parcela - least(parcelas.valor_pago, parcelas.valor_parcela)) as saldo_vencido,
-        sum(case when date_diff(spine.data_referencia, parcelas.data_vencimento, day) <= 30
-                 then parcelas.valor_parcela else 0 end)                        as saldo_vencido_01_30,
-        sum(case when date_diff(spine.data_referencia, parcelas.data_vencimento, day) between 31 and 60
-                 then parcelas.valor_parcela else 0 end)                        as saldo_vencido_31_60,
-        sum(case when date_diff(spine.data_referencia, parcelas.data_vencimento, day) between 61 and 90
-                 then parcelas.valor_parcela else 0 end)                        as saldo_vencido_61_90,
-        sum(case when date_diff(spine.data_referencia, parcelas.data_vencimento, day) between 91 and 180
-                 then parcelas.valor_parcela else 0 end)                        as saldo_vencido_91_180,
-        sum(case when date_diff(spine.data_referencia, parcelas.data_vencimento, day) between 181 and 360
-                 then parcelas.valor_parcela else 0 end)                        as saldo_vencido_181_360,
-        sum(case when date_diff(spine.data_referencia, parcelas.data_vencimento, day) > 360
-                 then parcelas.valor_parcela else 0 end)                        as saldo_vencido_360_mais
+        count(parcelas_por_dia.parcela_id)                                      as parcelas_vencidas,
+        count(distinct parcelas_por_dia.contrato_id)                            as contratos_vencidos,
+        sum(parcelas_por_dia.saldo_em_d)                                        as saldo_vencido,
+        sum(case when parcelas_por_dia.dias_atraso_em_d <= 30
+                 then parcelas_por_dia.saldo_em_d else 0 end)                   as saldo_vencido_01_30,
+        sum(case when parcelas_por_dia.dias_atraso_em_d between 31 and 60
+                 then parcelas_por_dia.saldo_em_d else 0 end)                   as saldo_vencido_31_60,
+        sum(case when parcelas_por_dia.dias_atraso_em_d between 61 and 90
+                 then parcelas_por_dia.saldo_em_d else 0 end)                   as saldo_vencido_61_90,
+        sum(case when parcelas_por_dia.dias_atraso_em_d between 91 and 180
+                 then parcelas_por_dia.saldo_em_d else 0 end)                   as saldo_vencido_91_180,
+        sum(case when parcelas_por_dia.dias_atraso_em_d between 181 and 360
+                 then parcelas_por_dia.saldo_em_d else 0 end)                   as saldo_vencido_181_360,
+        sum(case when parcelas_por_dia.dias_atraso_em_d > 360
+                 then parcelas_por_dia.saldo_em_d else 0 end)                   as saldo_vencido_360_mais
     from spine
-    left join parcelas
-        on spine.carteira = parcelas.carteira
-        and parcelas.data_vencimento < spine.data_referencia
-        and (parcelas.data_pagamento is null or parcelas.data_pagamento >= spine.data_referencia)
-        and not (parcelas.is_renegociada and parcelas.data_acordo < spine.data_referencia)
+    left join parcelas_por_dia
+        on spine.data_referencia = parcelas_por_dia.data_referencia
+        and spine.carteira = parcelas_por_dia.carteira
     group by spine.data_referencia, spine.carteira
 
 ),
@@ -137,9 +162,7 @@ recuperado_diario as (
         sum(case when pagamentos.tipo_pagamento = 'parcela' and parcelas.dias_atraso <= 0
                  then pagamentos.valor_pago else 0 end)                         as valor_pago_em_dia,
         sum(pagamentos.valor_pago)                                              as valor_pago_total
-    from {{ ref('stg_cobranca__pagamentos') }} as pagamentos
-    inner join {{ ref('stg_cobranca__contratos') }} as contratos
-        on pagamentos.contrato_id = contratos.contrato_id
+    from pagamentos
     left join parcelas
         on pagamentos.parcela_id = parcelas.parcela_id
     group by 1, 2

@@ -227,6 +227,8 @@ def gerar(seed: int, data_corte: date, n_clientes: int) -> dict[str, list[dict]]
                         p.data_pagamento = venc + timedelta(days=rng.randint(0, 120))
                         if p.data_pagamento > data_corte:
                             p.data_pagamento = None
+                if p.data_pagamento is not None and p.data_pagamento > data_corte:
+                    p.data_pagamento = None  # ainda não aconteceu na data de corte
                 if p.data_pagamento is not None:
                     p.valor_pago = valor_parcela if rng.random() > 0.04 else round(valor_parcela * 0.5, 2)
             c.parcelas.append(p)

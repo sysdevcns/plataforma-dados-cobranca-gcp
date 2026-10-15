@@ -124,15 +124,8 @@ models:
         data_tests:
           - not_null
           - unique
-          - dbt_utils.expression_is_true:
-              arguments:
-                expression: "not regexp_contains(cpf_hash, r'^[0-9]{11}$') and length(cpf_hash) = 64"
       - name: email_hash
         description: SHA-256 do e-mail com sal; nulo quando o cliente não tem e-mail.
-        data_tests:
-          - dbt_utils.expression_is_true:
-              arguments:
-                expression: "not regexp_contains(email_hash, '@')"
       - name: uf
         data_tests:
           - not_null
@@ -162,6 +155,14 @@ models:
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 0
+    data_tests:
+      # LGPD: hash tem 64 hex e nunca parece um CPF; e-mail mascarado nunca contém @
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "length(cpf_hash) = 64 and not regexp_contains(cpf_hash, r'^[0-9]{11}$')"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "email_hash is null or not regexp_contains(email_hash, '@')"
 
   - name: dim_contratos
     description: >
@@ -243,9 +244,7 @@ models:
           arguments:
             expression: >
               abs(saldo_vencido_01_30 + saldo_vencido_31_60 + saldo_vencido_61_90 + saldo_vencido_91_180
-                  + saldo_vencido_181_360 + saldo_vencido_360_mais - saldo_vencido_inicio_dia) < 1
-          config:
-            severity: warn
+                  + saldo_vencido_181_360 + saldo_vencido_360_mais - saldo_vencido_inicio_dia) < 0.01
 
   - name: mart_efetividade_canal_diaria
     description: >

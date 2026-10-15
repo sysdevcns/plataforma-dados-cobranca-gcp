@@ -16,7 +16,7 @@ raw as (
     select
         sum(case
                 when pagamentos.tipo_pagamento = 'acordo' then pagamentos.valor_pago
-                when parcelas.data_pagamento > parcelas.data_vencimento then pagamentos.valor_pago
+                when parcelas.dias_atraso > 0 then pagamentos.valor_pago
                 else 0
             end)                    as valor_recuperado,
         sum(pagamentos.valor_pago)  as valor_pago_total
