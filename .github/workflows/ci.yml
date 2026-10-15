@@ -1,0 +1,84 @@
+# CI sem credenciais de nuvem:
+#   1. dbt deps + dbt parse valida que o projeto compila (não conecta ao BigQuery);
+#   2. os scripts de ingestão rodam de ponta a ponta com landing local e API REST simulada.
+# Para rodar `dbt build` em CI, autentique com Workload Identity Federation
+# (google-github-actions/auth) e troque o profile gerado abaixo por method: oauth com o projeto real.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  dbt-parse:
+    name: dbt deps + dbt parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Gerar profiles.yml de CI (sem credenciais)
+        run: |
+          cat > profiles.yml <<'YML'
+          plataforma_dados_cobranca:
+            target: ci
+            outputs:
+              ci:
+                type: bigquery
+                method: oauth
+                project: ci-placeholder
+                dataset: ci_placeholder
+                location: US
+                threads: 1
+          YML
+
+      - name: dbt deps
+        run: dbt deps --profiles-dir .
+
+      - name: dbt parse
+        run: dbt parse --profiles-dir . --target ci --no-partial-parse
+
+  ingestao:
+    name: ingestão de exemplo (planilha + API REST simulada)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install pandas openpyxl requests
+
+      - name: Gerador de dados sintéticos é determinístico
+        run: |
+          python scripts/gerar_dados_sinteticos.py --data-corte 2026-10-14 --destino /tmp/seeds_ci
+          cmp seeds/raw_contratos.csv /tmp/seeds_ci/raw_contratos.csv
+          cmp seeds/raw_contatos.csv /tmp/seeds_ci/raw_contatos.csv
+
+      - name: Ingestão de planilha (CSV) para o landing local
+        run: python ingest/ingest_planilha.py seeds/raw_pagamentos.csv --sistema credor_banco_alfa --entidade pagamentos --landing ./landing
+
+      - name: Ingestão incremental de API REST simulada
+        env:
+          API_TOKEN: token-de-teste
+        run: |
+          python ingest/mock_api.py --porta 8089 &
+          sleep 2
+          python ingest/ingest_api_rest.py --url http://127.0.0.1:8089/v1/acordos --sistema plataforma_acordos --entidade acordos --landing ./landing --limite 10
+          python ingest/ingest_api_rest.py --url http://127.0.0.1:8089/v1/acordos --sistema plataforma_acordos --entidade acordos --landing ./landing --limite 10
+
+      - name: Conferir landing
+        run: |
+          find landing -type f | sort
+          test "$(find landing -name '*.manifest.json' | wc -l)" -ge 2
