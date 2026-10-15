@@ -1,0 +1,36 @@
+# Copie este arquivo para profiles.yml (na raiz do projeto ou em ~/.dbt/) e preencha
+# com o seu projeto GCP. profiles.yml está no .gitignore e nunca deve ser versionado.
+#
+# Autenticação recomendada para desenvolvimento (sem chave JSON):
+#   gcloud auth application-default login
+#
+# Para CI/produção, use uma service account dedicada (method: service-account) com a chave fora
+# do repositório, ou Workload Identity Federation no GitHub Actions (sem chave nenhuma).
+
+plataforma_dados_cobranca:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: oauth                      # usa as Application Default Credentials do gcloud
+      project: seu-projeto-gcp           # ID do projeto (não o nome)
+      dataset: dbt_cobranca              # dataset base; o dbt cria dbt_cobranca_raw, _referencia, _staging, _intermediate, _marts
+      location: US
+      threads: 4
+      timeout_seconds: 300
+      priority: interactive
+      job_retries: 1
+      maximum_bytes_billed: 2000000000   # trava de segurança: 2 GB por query
+
+    prod:
+      type: bigquery
+      method: service-account
+      project: seu-projeto-gcp
+      dataset: cobranca
+      location: US
+      threads: 8
+      keyfile: /caminho/fora/do/repo/service-account.json
+      timeout_seconds: 600
+      priority: batch
+      job_retries: 2
+      maximum_bytes_billed: 50000000000

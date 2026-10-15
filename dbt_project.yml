@@ -1,0 +1,97 @@
+# Plataforma de dados de cobrança no GCP: projeto dbt com camadas Raw / Cleansed / Curated no BigQuery.
+# Dados sintéticos de uma operação de cobrança (contratos, parcelas, acordos, contatos de discador/bot
+# e pagamentos), gerados por scripts/gerar_dados_sinteticos.py e carregados como seeds (camada Raw).
+
+name: 'plataforma_dados_cobranca'
+version: '1.0.0'
+config-version: 2
+
+profile: 'plataforma_dados_cobranca'
+
+require-dbt-version: ">=1.10.0"
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+flags:
+  send_anonymous_usage_stats: false
+
+vars:
+  # Data de corte usada para calcular atraso e aging. null = data atual em America/Sao_Paulo
+  # (ver macro data_referencia). Para reprocessar uma foto do passado: --vars '{data_referencia: "2026-09-30"}'.
+  data_referencia: null
+  # Sal do hash de dados pessoais (CPF, e-mail) em dim_clientes. Em produção vem do Secret Manager
+  # via variável de ambiente: --vars "{pii_salt: '$PII_SALT'}". O valor padrão serve só para o sandbox.
+  pii_salt: "troque-este-sal-no-secret-manager"
+  # Janela de reprocessamento dos modelos incrementais fora do sandbox (partições reescritas a cada run).
+  incremental_lookback_days: 3
+
+models:
+  plataforma_dados_cobranca:
+    # Camada Raw / Bronze -> views finas sobre as tabelas de landing (renomeia, tipa, padroniza)
+    staging:
+      +materialized: view
+      +schema: staging
+      +tags: ["raw", "bronze"]
+    # Camada Cleansed / Silver -> regras de negócio da cobrança (aging, régua, status consolidado)
+    intermediate:
+      +materialized: view
+      +schema: intermediate
+      +tags: ["cleansed", "silver"]
+    # Camada Curated / Gold -> fatos, dimensões e marts prontos para BI, MIS e features de IA
+    marts:
+      +materialized: table
+      +schema: marts
+      +tags: ["curated", "gold"]
+      +persist_docs:
+        relation: true
+        columns: true
+
+seeds:
+  plataforma_dados_cobranca:
+    # Os seeds raw_* fazem o papel das tabelas de landing carregadas pela ingestão (GCS -> BigQuery).
+    +schema: raw
+    +tags: ["raw", "bronze"]
+    raw_clientes:
+      +column_types:
+        cpf: string
+        telefone: string
+        cep: string
+    raw_contratos:
+      +column_types:
+        valor_contratado: numeric
+        valor_parcela: numeric
+    raw_parcelas:
+      +column_types:
+        valor_parcela: numeric
+    raw_acordos:
+      +column_types:
+        valor_divida: numeric
+        desconto_pct: numeric
+        valor_acordo: numeric
+        valor_entrada: numeric
+    raw_pagamentos:
+      +column_types:
+        valor_pago: numeric
+    raw_contatos:
+      +column_types:
+        duracao_seg: int64
+    # Tabelas de referência (mantidas pelo time de dados, não vêm dos sistemas de origem)
+    regua_cobranca:
+      +schema: referencia
+      +tags: ["referencia"]
+    resultado_contato:
+      +schema: referencia
+      +tags: ["referencia"]
+
+data_tests:
+  plataforma_dados_cobranca:
+    +store_failures: false
