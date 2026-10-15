@@ -1,0 +1,6 @@
+fase_ordem,fase,dias_atraso_inicio,dias_atraso_fim,canal_prioritario,acao,desconto_maximo_pct
+1,preventiva,-5,0,sms,lembrete de vencimento e envio de 2a via,0
+2,amigavel,1,15,bot_whatsapp,aviso de atraso e link de pagamento,5
+3,administrativa,16,60,discador,negociacao assistida por operador,20
+4,recuperacao,61,180,discador,proposta com desconto e parcelamento,40
+5,juridica,181,99999,email,notificacao extrajudicial e avaliacao de ajuizamento,60

@@ -1,0 +1,28 @@
+canal,resultado,descricao,is_contato_efetivo,is_promessa,is_acordo,is_opt_out
+discador,nao_atende,chamada nao atendida,false,false,false,false
+discador,caixa_postal,caiu na caixa postal,false,false,false,false
+discador,numero_invalido,numero inexistente ou fora de servico,false,false,false,false
+discador,terceiro,atendido por terceiro (nao e o devedor),false,false,false,false
+discador,cpc_recusa,contato com pessoa certa que recusou negociar,true,false,false,false
+discador,cpc_promessa,contato com pessoa certa com promessa de pagamento,true,true,false,false
+discador,cpc_acordo,contato com pessoa certa com acordo fechado,true,false,true,false
+discador,cpc_sem_condicao,contato com pessoa certa sem condicao de pagar,true,false,false,false
+ura,nao_atende,chamada nao atendida,false,false,false,false
+ura,caixa_postal,caiu na caixa postal,false,false,false,false
+ura,numero_invalido,numero inexistente ou fora de servico,false,false,false,false
+ura,ura_transferida,devedor navegou na URA e foi transferido,true,false,false,false
+ura,ura_abandonada,devedor atendeu e desligou na URA,false,false,false,false
+bot_whatsapp,entregue,mensagem entregue sem leitura,false,false,false,false
+bot_whatsapp,lido,mensagem lida sem resposta,false,false,false,false
+bot_whatsapp,respondido,devedor interagiu com o bot,true,false,false,false
+bot_whatsapp,bot_promessa,devedor prometeu pagar pelo bot,true,true,false,false
+bot_whatsapp,bot_acordo,acordo fechado no fluxo do bot,true,false,true,false
+bot_whatsapp,opt_out,devedor pediu para nao ser contatado,false,false,false,true
+bot_whatsapp,falha_envio,falha na entrega da mensagem,false,false,false,false
+sms,entregue,SMS entregue,false,false,false,false
+sms,falha_envio,falha na entrega do SMS,false,false,false,false
+sms,opt_out,devedor pediu para nao ser contatado,false,false,false,true
+email,enviado,e-mail enviado,false,false,false,false
+email,aberto,e-mail aberto,true,false,false,false
+email,clique,devedor clicou no link de negociacao,true,false,false,false
+email,bounce,endereco invalido,false,false,false,false
