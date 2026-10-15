@@ -30,3 +30,6 @@ Thumbs.db
 landing/
 docs/*.docx
 ~$*
+
+# Config local do editor/assistente
+.claude/
