@@ -1,0 +1,125 @@
+version: 2
+
+models:
+  - name: int_acordos__status
+    description: >
+      Camada Cleansed/Silver. Acordo com status consolidado recalculado a partir dos pagamentos
+      (quitado, ativo, quebrado, cancelado) e flag de divergência com o status do CRM.
+    columns:
+      - name: acordo_id
+        data_tests:
+          - unique
+          - not_null
+      - name: status_consolidado
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['quitado', 'ativo', 'quebrado', 'cancelado']
+      - name: valor_pago
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: parcelas_pagas
+        description: Nunca maior que o plano do acordo.
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "<= qtd_parcelas"
+
+  - name: int_parcelas__aging
+    description: >
+      Camada Cleansed/Silver. Parcela com pagamento, dias de atraso, faixa de aging, status consolidado
+      e fase da régua. Única fonte das regras de aging e status para todos os marts.
+    columns:
+      - name: parcela_id
+        data_tests:
+          - unique
+          - not_null
+      - name: status_consolidado
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['paga', 'paga_parcial', 'renegociada', 'vencida', 'a_vencer']
+      - name: aging_bucket
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['paga', 'renegociada', 'a_vencer', '01-30', '31-60', '61-90', '91-180', '181-360', '360+']
+      - name: saldo_aberto
+        description: Nunca negativo e nunca maior que o valor da parcela.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "<= valor_parcela"
+      - name: fase_regua
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['preventiva', 'amigavel', 'administrativa', 'recuperacao', 'juridica']
+      - name: data_pagamento
+        description: Parcela paga tem data de pagamento; parcela em aberto não.
+        data_tests:
+          - dbt_utils.not_null_proportion:
+              arguments:
+                at_least: 0.99
+              config:
+                where: "status_consolidado = 'paga'"
+
+  - name: int_contratos__regua
+    description: >
+      Camada Cleansed/Silver. Contrato consolidado: saldo vencido, atraso máximo, posição na régua,
+      acordo vigente, contatos e status consolidado (quitado, em_acordo, inadimplente, em_dia).
+    columns:
+      - name: contrato_id
+        data_tests:
+          - unique
+          - not_null
+      - name: status_consolidado
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['quitado', 'em_acordo', 'inadimplente', 'em_dia']
+      - name: fase_regua
+        description: Obrigatória quando há saldo vencido.
+        data_tests:
+          - not_null:
+              config:
+                where: "saldo_vencido > 0"
+      - name: saldo_vencido
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+  - name: int_contatos__classificados
+    description: >
+      Camada Cleansed/Silver. Tentativa de contato com flags do catálogo (efetivo, promessa, acordo,
+      opt-out), atraso e fase da régua no momento do contato e conversão em acordo em até 7 dias.
+    columns:
+      - name: contato_id
+        data_tests:
+          - unique
+          - not_null
+      - name: resultado_fora_do_catalogo
+        description: Todo resultado enviado pelos fornecedores precisa existir no catálogo.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [false]
+      - name: dias_atraso_no_contato
+        description: >
+          Contato só acontece com parcela em atraso. Severidade warn: a operação também faz
+          contato preventivo antes do vencimento, que aqui aparece como nulo.
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
