@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Plataforma de dados de cobrança no GCP - proposta de arquitetura</title>
+<style>
+  @page { size: A4; margin: 1.2cm 1.4cm; }
+  body { font-family: Calibri, "Segoe UI", Arial, sans-serif; font-size: 9pt; color: #1f2937; line-height: 1.22; margin: 0; }
+  h1 { font-size: 17pt; color: #04092C; margin: 0 0 2pt 0; }
+  h2 { font-size: 10.5pt; color: #ffffff; background: #197099; padding: 1.5pt 6pt; margin: 6pt 0 3pt 0; }
+  h3 { font-size: 10pt; color: #04092C; margin: 6pt 0 2pt 0; }
+  p { margin: 0 0 4pt 0; }
+  .sub { color: #197099; font-size: 10.5pt; font-weight: bold; margin-bottom: 2pt; }
+  .meta { color: #4b5563; font-size: 8.5pt; margin-bottom: 4pt; }
+  .barra { border-top: 2.5pt solid #00A0D2; margin: 4pt 0 6pt 0; }
+  table { border-collapse: collapse; width: 100%; margin: 2pt 0 5pt 0; }
+  th { background: #04092C; color: #ffffff; font-size: 8pt; text-align: left; padding: 2pt 4pt; }
+  td { border-bottom: 0.5pt solid #cbd5e1; padding: 2pt 4pt; vertical-align: top; font-size: 8pt; }
+  td.k { font-weight: bold; color: #04092C; width: 22%; }
+  ul { margin: 1pt 0 4pt 14pt; padding: 0; }
+  li { margin-bottom: 1.5pt; }
+  .fluxo td { border: 0.75pt solid #197099; background: #e6f6fb; text-align: center; font-size: 8pt; padding: 3pt 3pt; }
+  .fluxo td.seta { border: none; background: none; color: #197099; font-weight: bold; font-size: 12pt; width: 14pt; padding: 0; }
+  .fluxo b { color: #04092C; }
+  .dois { width: 100%; border: none; }
+  .dois td { border: none; padding: 0 6pt 0 0; vertical-align: top; width: 50%; font-size: 8.5pt; }
+  .ass { margin-top: 3pt; border-top: 1pt solid #00A0D2; padding-top: 2pt; color: #04092C; font-size: 9pt; }
+  .ass b { font-size: 10pt; }
+  .nota { font-size: 7.5pt; color: #4b5563; font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>Plataforma de dados de cobrança no GCP</h1>
+<div class="sub">Como eu abordaria a plataforma de dados de uma operação de cobrança e recuperação de crédito</div>
+<div class="meta">Proposta de arquitetura preparada para o processo seletivo de Arquiteto/Engenheiro de Dados da PeopleWare Tecnologia · Sidney Moraes · outubro de 2026 · projeto completo com código, testes e resultado de execução em <b>github.com/sysdevcns/plataforma-dados-cobranca-gcp</b></div>
+<div class="barra" style="margin:3pt 0 4pt 0"></div>
+
+<h2>1. Leitura do desafio</h2>
+<p>Uma operação de cobrança trabalha com carteiras de vários credores e fornecedores que mudam (discador, bot de WhatsApp, SMS, e-mail, plataforma de acordos, assinatura eletrônica). As fontes são heterogêneas: PostgreSQL/MySQL, CRM via API REST (tipo Pipedrive), assinatura eletrônica (tipo DocuSign), webhooks de discador e bot, planilhas CSV/Excel dos credores e Oracle legado. Os indicadores que importam (taxa de recuperação, aging, efetividade por canal) costumam não bater entre MIS, operação e credor; o status do CRM fica desatualizado; dado pessoal se espalha em planilhas e dashboards; o custo de nuvem cresce sem dono. A plataforma precisa garantir <b>um padrão único de ingestão</b> com linhagem, <b>regras de negócio em um só lugar e testadas</b>, <b>status derivado do fato</b> (pagamentos) e não do campo digitado, <b>dado pessoal em claro só onde é indispensável</b> e <b>custo visível desde o primeiro dia</b>.</p>
+
+<h2>2. Arquitetura proposta</h2>
+<table class="fluxo">
+  <tr>
+    <td><b>Fontes</b><br>PostgreSQL/MySQL · CRM REST · assinatura eletrônica · webhooks discador/bot · CSV/Excel · Oracle legado</td>
+    <td class="seta">&#9654;</td>
+    <td><b>Ingestão (Python)</b><br>Cloud Run Jobs incrementais · Cloud Run + Pub/Sub para webhooks · Cloud Functions/Transfer para arquivos · Secret Manager</td>
+    <td class="seta">&#9654;</td>
+    <td><b>Landing</b><br>Cloud Storage imutável<br>sistema/entidade/dt=AAAA-MM-DD + manifesto</td>
+    <td class="seta">&#9654;</td>
+    <td><b>BigQuery + dbt</b><br>Raw (Bronze) → Cleansed (Silver) → Curated (Gold)<br>testes, docs, lineage</td>
+    <td class="seta">&#9654;</td>
+    <td><b>Consumo</b><br>MIS/BI · fila da operação · Vertex AI (features, embeddings, LLM) · credores</td>
+  </tr>
+</table>
+<table>
+  <tr><th style="width:22%">Bloco</th><th>Decisão e justificativa</th></tr>
+  <tr><td class="k">Landing e ingestão</td><td>Todo dado entra como arquivo imutável no Cloud Storage, com manifesto (origem, janela, contagem, hash). Extratores Python em Cloud Run Jobs: incremental por marca d'água, paginação, retry com backoff, segredo no Secret Manager. Webhooks entram por Cloud Run + Pub/Sub, desacoplando o pico do fornecedor da carga. Reprocessar é reler o arquivo, não refazer a extração.</td></tr>
+  <tr><td class="k">BigQuery em três camadas com dbt</td><td><b>Raw</b>: tabelas carregadas do landing + views de staging (renomeia, tipa, padroniza); dado pessoal em claro só aqui, em dataset com IAM restrito e policy tags. <b>Cleansed</b>: aging e dias de atraso, régua de cobrança como tabela de referência, status consolidado de parcela/acordo/contrato a partir dos pagamentos, efetividade de contato por catálogo de resultados. <b>Curated</b>: fct_parcelas, fct_contatos, dim_clientes (CPF e e-mail em hash com sal), dim_contratos, mart de recuperação diária e mart de efetividade por canal/fornecedor.</td></tr>
+  <tr><td class="k">Orquestração</td><td>Cloud Scheduler → Cloud Run Jobs no início (um job por fonte, dbt build ao final); Cloud Composer (Airflow) quando houver dependências entre fontes, SLA por carteira e backfills. <i>dbt source freshness</i> como sensor.</td></tr>
+  <tr><td class="k">CI/CD</td><td>GitHub Actions: <i>dbt parse</i> e testes de ingestão em todo PR sem credenciais; Slim CI em dataset efêmero via Workload Identity Federation; merge em main roda dbt build em produção; Terraform para datasets, buckets e IAM.</td></tr>
+  <tr><td class="k">Dados para IA</td><td>Features de propensão a pagar e de melhor canal/horário a partir da Curated, publicadas no Vertex AI Feature Store com data de referência (sem vazamento de futuro). Transcrições e conversas de bot passam por Cloud DLP e viram embeddings (BigQuery VECTOR_SEARCH) para resumo, classificação de motivo e RAG com Gemini. O modelo prioriza a fila; a decisão continua humana (LGPD art. 20).</td></tr>
+  <tr><td class="k">Governança e LGPD</td><td>Dado pessoal em claro só em Raw; Curated entrega hash com sal (Secret Manager), nome em iniciais, telefone só DDD, idade em faixa; teste automático falha o build se uma coluna proibida aparecer; opt-out materializado para régua e discador; lineage do dbt no Dataplex; acesso auditado; retenção alinhada ao contrato com o credor.</td></tr>
+  <tr><td class="k">FinOps</td><td>Fatos particionados por data e clusterizados pelos filtros do BI; staging como view; maximum_bytes_billed por ambiente; cotas por projeto e usuário; lifecycle do bucket; billing export + INFORMATION_SCHEMA.JOBS para custo por consulta e por mart; reservas de slots só com histórico que prove economia.</td></tr>
+</table>
+
+<h2>3. Decisões e trade-offs</h2>
+<table>
+  <tr><th style="width:22%">Decisão</th><th>Por quê</th><th style="width:34%">O que eu abro mão / quando reveria</th></tr>
+  <tr><td class="k">dbt Core</td><td>Versionamento, testes como código, documentação e lineage, ambientes isolados, ecossistema. É o que permite dizer "o número do MIS tem teste".</td><td>Dataform se o time for 100% BigQuery sem necessidade dos pacotes do dbt; procedures só para rotinas pontuais.</td></tr>
+  <tr><td class="k">Não copiar o Bronze no BigQuery</td><td>O landing físico é o Cloud Storage. Na Raw entra a tabela carregada + views de staging. Duplicar a tabela crua só dobra armazenamento e cria cópia que ninguém testa.</td><td>Em lake Parquet (Spark) o Bronze seria a ingestão física; aqui esse papel é do bucket.</td></tr>
+  <tr><td class="k">Quando particionar</td><td>Fatos e marts diários por data quando passam de ~1 GB ou têm filtro de data dominante; abaixo disso clustering basta; dimensões só clustering; granularidade mensal em safra de vencimento evita partições minúsculas.</td><td>Particionar tabela pequena é anti-padrão. Reavaliar com bytes lidos por consulta.</td></tr>
+  <tr><td class="k">Incremental sem MERGE</td><td>Webhooks chegam atrasados e com correção: reescrever as últimas N partições (insert_overwrite + copy_partitions) é idempotente e barato.</td><td>MERGE quando a fonte envia só deltas por chave e a tabela é grande demais para reescrever.</td></tr>
+  <tr><td class="k">Status derivado do fato</td><td>O CRM informa o que alguém digitou; os pagamentos mostram o que aconteceu. A divergência vira indicador de qualidade da origem.</td><td>Exige acordo com a operação sobre tolerâncias; a regra vive em um modelo e muda por PR.</td></tr>
+  <tr><td class="k">Oracle legado incremental com janela do DBA</td><td>Extrator Python (python-oracledb) por coluna de auditoria, em janela acordada (ex.: 01h-05h), lotes fixos, retomada por chave, limite de sessões; carga inicial em fatias por período.</td><td>GoldenGate/Datastream resolve CDC, mas custa licença e mexe no banco: só depois de medir volume e latência necessários. Sem coluna de auditoria: extração completa com hash por linha.</td></tr>
+  <tr><td class="k">Scheduler antes de Composer</td><td>Composer tem custo fixo 24x7 e curva de operação; com poucas fontes independentes, Scheduler + Cloud Run Jobs resolve.</td><td>Migrar quando houver DAG real; os jobs já são contêineres, muda só o disparador.</td></tr>
+</table>
+
+<h2>4. Plano de 90 dias</h2>
+<table>
+  <tr><th style="width:22%">Bloco</th><th>Entregas</th><th style="width:30%">Como se mede</th></tr>
+  <tr><td class="k">1. Fundação e primeira carteira (sem. 1-4)</td><td>Projetos dev/prod, buckets, datasets, IAM via Terraform; padrão de ingestão com as duas fontes críticas (sistema de cobrança e discador); dbt com Raw/Cleansed/Curated para uma carteira; fct_parcelas, dim_contratos, mart de recuperação; CI e build diário.</td><td>Recuperação e aging da carteira piloto batendo com o MIS atual (ou divergência explicada); build diário sem intervenção por 2 semanas.</td></tr>
+  <tr><td class="k">2. Todas as fontes e governança (sem. 5-8)</td><td>CRM, planilhas, bot, assinatura eletrônica e Oracle no padrão; fct_contatos, dim_clientes com LGPD, mart de efetividade; policy tags e authorized views por credor; Slim CI; alertas de freshness e de teste.</td><td>Todas as carteiras na plataforma; nenhum dashboard lendo CPF em claro; onboarding de fonte nova em até 1 semana.</td></tr>
+  <tr><td class="k">3. Operação e IA (sem. 9-13)</td><td>Fila de cobrança do dia servida da Curated; features de propensão e melhor canal/horário no Feature Store; piloto de embeddings sobre transcrições com DLP; painel de FinOps; decisão sobre Composer; documentação e passagem de bastão.</td><td>Operação usando a fila; propensão em teste A/B em uma carteira; custo mensal conhecido e dentro do orçamento.</td></tr>
+</table>
+
+<h2>5. Riscos e mitigações</h2>
+<table>
+  <tr><th style="width:34%">Risco</th><th>Mitigação</th></tr>
+  <tr><td class="k" style="width:34%">Fornecedor muda layout sem aviso</td><td>Landing imutável preserva o que chegou; testes de staging falham antes do mart; catálogo de resultados em tabela de referência isola o MIS; contrato de dados por fornecedor.</td></tr>
+  <tr><td class="k">Oracle sem janela ou sem auditoria confiável</td><td>Negociar janela e sessões com o DBA na semana 1; fatias com retomada; hash por linha; medir volume antes de prometer latência.</td></tr>
+  <tr><td class="k">Indicadores não batem com o MIS atual</td><td>Operação paralela com reconciliação automatizada por indicador e divergências explicadas por escrito antes de desligar o antigo.</td></tr>
+  <tr><td class="k">Exposição de dado pessoal</td><td>Curated sem dado em claro por construção e por teste; policy tags; auditoria de leitura; revisão LGPD em todo PR que toque dim_clientes.</td></tr>
+  <tr><td class="k">Custo cresce com consultas do BI</td><td>Partição e cluster; maximum_bytes_billed; cota por usuário; painel de custo por consulta na primeira semana.</td></tr>
+  <tr><td class="k">Dependência de uma pessoa / IA decidindo sozinha</td><td>Tudo em Git com docs e CI; passagem de bastão no bloco 3. Modelo prioriza fila, humano decide; monitoramento de viés por carteira.</td></tr>
+</table>
+
+<h2>6. O que já está construído no repositório</h2>
+<table class="dois"><tr>
+<td>
+<ul>
+  <li>Projeto dbt sobre BigQuery com dataset sintético de cobrança (600 clientes, 900 contratos, ~11 mil parcelas, 149 acordos, ~8,2 mil pagamentos, ~17 mil contatos de discador, URA, bot, SMS e e-mail).</li>
+  <li>16 modelos em Raw/Cleansed/Curated; régua e catálogo de resultados como tabelas de referência; macros para sandbox, data de referência, hash LGPD e faixas de aging.</li>
+  <li>153 testes + teste genérico próprio + 3 singulares: reconciliação financeira entre camadas, ausência de dado pessoal em claro (via INFORMATION_SCHEMA) e integridade de acordos quitados.</li>
+</ul>
+</td>
+<td>
+<ul>
+  <li><b>dbt build executado no BigQuery: PASS=177, WARN=0, ERROR=0</b> (8 seeds, 16 modelos, 153 testes). O teste de reconciliação apontou, durante a construção, dois erros que deixariam o número "bonito e errado".</li>
+  <li>Ingestão de planilha (CSV/Excel) e de API REST incremental (paginação, retry, marca d'água) para landing local ou gs://, com mock de API e execução no CI do GitHub Actions (dbt parse + ingestão, sem credenciais).</li>
+</ul>
+</td>
+</tr></table>
+<p class="nota">Proposta, não relato de projeto entregue: minha experiência em cobrança vem de atuar como a pessoa de dados do canal digital de cobrança (discador, bot, fontes e indicadores) e de 15+ anos em MIS/BI, SQL Server/PostgreSQL, Python e Medallion na área financeira; Composer, Vertex AI e Oracle são escolhas de arquitetura estudadas para este desenho.</p>
+
+<div class="ass"><b>Sidney Moraes</b> · linkedin.com/in/sid-moraes · github.com/sysdevcns/plataforma-dados-cobranca-gcp</div>
+
+</body>
+</html>
